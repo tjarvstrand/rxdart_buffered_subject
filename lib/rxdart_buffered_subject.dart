@@ -4,13 +4,18 @@ import 'dart:collection';
 import 'package:rxdart/rxdart.dart';
 
 mixin _BufferEntry<T> {
+  int get timestamp;
+
   void addToSink(StreamSink<T> controller);
 }
 
 class _BufferedEvent<T> with _BufferEntry<T> {
   final T value;
 
-  _BufferedEvent(this.value);
+  @override
+  final int timestamp;
+
+  _BufferedEvent(this.value, this.timestamp);
 
   @override
   void addToSink(StreamSink<T> controller) => controller.add(value);
@@ -20,7 +25,10 @@ class _BufferedError<T> with _BufferEntry<T> {
   final Object error;
   final StackTrace? stackTrace;
 
-  _BufferedError(this.error, this.stackTrace);
+  @override
+  final int timestamp;
+
+  _BufferedError(this.error, this.stackTrace, this.timestamp);
 
   @override
   void addToSink(StreamSink<T> controller) => controller.addError(error, stackTrace);
@@ -87,31 +95,59 @@ class _BufferedError<T> with _BufferEntry<T> {
 class BufferedSubject<T> extends Subject<T> {
   bool _isAddingStreamItems = false;
   final int? _maxSize;
+  final Duration? _maxAge;
+  final int Function() _timeStampFun;
   final Queue<_BufferEntry> _buffer;
   final StreamController<T> _controller;
   @override
   void Function()? onListen;
 
-  BufferedSubject._(this._controller, Stream<T> stream, this._maxSize, this._buffer, this.onListen)
-      : super(_controller, stream) {
+  BufferedSubject._(
+    this._controller,
+    Stream<T> stream,
+    this._maxSize,
+    this._maxAge,
+    this._timeStampFun,
+    this._buffer,
+    this.onListen,
+  ) : super(_controller, stream) {
     _controller.onListen = () {
+      final now = _timeStampFun();
       for (final el in _buffer) {
-        el.addToSink(_controller);
+        if (!_isEntryExpired(el, now)) {
+          el.addToSink(_controller);
+        }
       }
       _buffer.clear();
       onListen?.call();
     };
   }
 
+  static int defaultTimestampFun() => DateTime.now().microsecondsSinceEpoch;
+
+  bool _isEntryExpired(_BufferEntry entry, now) {
+    final maxAge = _maxAge;
+    if (maxAge == null) return false;
+    return entry.timestamp < now - maxAge.inMicroseconds;
+  }
+
   /// Constructs a [BufferedSubject], optionally pass handlers for
   /// [onListen], [onCancel] and a flag to handle events [sync].
   ///
   /// See also [StreamController.broadcast]
-  factory BufferedSubject({void Function()? onListen, void Function()? onCancel, bool sync = false, int? maxSize}) {
+  factory BufferedSubject({
+    void Function()? onListen,
+    void Function()? onCancel,
+    bool sync = false,
+    int? maxSize,
+    Duration? maxAge,
+    // For testing. Timestamps must be strictly non-decreasing.
+    int Function() timeStampFun = defaultTimestampFun,
+  }) {
     final Queue<_BufferEntry<T>> buffer = Queue();
     final controller = StreamController<T>.broadcast(onCancel: onCancel, sync: sync);
 
-    return BufferedSubject<T>._(controller, controller.stream, maxSize, buffer, onListen);
+    return BufferedSubject<T>._(controller, controller.stream, maxSize, maxAge, timeStampFun, buffer, onListen);
   }
 
   @override
@@ -120,7 +156,7 @@ class BufferedSubject<T> extends Subject<T> {
       super.add(event);
     } else {
       _verifyState();
-      _buffer.add(_BufferedEvent<T>(event));
+      _buffer.add(_BufferedEvent<T>(event, _timeStampFun()));
       _truncateBuffer();
     }
   }
@@ -131,7 +167,7 @@ class BufferedSubject<T> extends Subject<T> {
       super.addError(error, stackTrace);
     } else {
       _verifyState();
-      _buffer.add(_BufferedError<T>(error, stackTrace));
+      _buffer.add(_BufferedError<T>(error, stackTrace, _timeStampFun()));
       _truncateBuffer();
     }
   }
@@ -147,13 +183,13 @@ class BufferedSubject<T> extends Subject<T> {
 
       source.listen(
         (event) {
-          _buffer.add(_BufferedEvent<T>(event));
+          _buffer.add(_BufferedEvent<T>(event, _timeStampFun()));
           _truncateBuffer();
         },
         cancelOnError: cancelOnError,
         onDone: completer.complete,
         onError: (error, trace) {
-          _buffer.add(_BufferedError<T>(error, trace));
+          _buffer.add(_BufferedError<T>(error, trace, _timeStampFun()));
           _truncateBuffer();
           if (cancelOnError == true) completer.complete();
         },
@@ -166,8 +202,11 @@ class BufferedSubject<T> extends Subject<T> {
   }
 
   void _truncateBuffer() {
-    final max = _maxSize;
-    while (max != null && _buffer.length > max) {
+    final maxSize = _maxSize;
+    final now = _timeStampFun();
+
+    while (
+        (maxSize != null && _buffer.length > maxSize) || (_buffer.isNotEmpty && _isEntryExpired(_buffer.first, now))) {
       _buffer.removeFirst();
     }
   }

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 
 import 'package:rxdart/rxdart.dart';
 import 'package:rxdart_buffered_subject/rxdart_buffered_subject.dart';
@@ -7,26 +8,25 @@ import 'package:test/test.dart';
 void main() {
   group('BufferedSubject', () {
     test('replays the buffered items to first subscriber', () async {
-      final subject = BufferedSubject<int>();
-
-      subject.add(1);
-      subject.add(2);
-      subject.add(3);
+      final subject = BufferedSubject<int>()
+        ..add(1)
+        ..add(2)
+        ..add(3);
       await expectLater(subject.stream, emitsInOrder(const <int>[1, 2, 3]));
 
-      subject.add(4);
-      subject.add(5);
+      subject
+        ..add(4)
+        ..add(5);
       await expectLater(subject.stream, emitsInOrder(const <int>[4, 5]));
     });
 
     test('replays the buffered items to first subscriber, includes null', () async {
-      final subject = BufferedSubject<int?>();
-
-      subject.add(null);
-      subject.add(1);
-      subject.add(2);
-      subject.add(3);
-      subject.add(null);
+      final subject = BufferedSubject<int?>()
+        ..add(null)
+        ..add(1)
+        ..add(2)
+        ..add(3)
+        ..add(null);
 
       await expectLater(
         subject.stream,
@@ -40,11 +40,10 @@ void main() {
     });
 
     test('replays the buffered errors to first subscriber', () async {
-      final subject = BufferedSubject<int>();
-
-      subject.addError(Exception());
-      subject.addError(Exception());
-      subject.addError(Exception());
+      final subject = BufferedSubject<int>()
+        ..addError(Exception())
+        ..addError(Exception())
+        ..addError(Exception());
 
       await expectLater(subject.stream,
           emitsInOrder(<StreamMatcher>[emitsError(isException), emitsError(isException), emitsError(isException)]));
@@ -53,11 +52,10 @@ void main() {
     });
 
     test('replays the buffered items to first subscriber that directly subscribes to the Subject', () async {
-      final subject = BufferedSubject<int>();
-
-      subject.add(1);
-      subject.add(2);
-      subject.add(3);
+      final subject = BufferedSubject<int>()
+        ..add(1)
+        ..add(2)
+        ..add(3);
 
       await expectLater(subject, emitsInOrder(const <int>[1, 2, 3]));
       subject.add(4);
@@ -65,27 +63,50 @@ void main() {
     });
 
     test('replays the buffered items and errors to the first subscriber directly subscribing to the Subject', () async {
-      final subject = BufferedSubject<int>();
-
-      subject.add(1);
-      subject.addError(Exception());
-      subject.addError(Exception());
-      subject.add(2);
+      final subject = BufferedSubject<int>()
+        ..add(1)
+        ..addError(Exception())
+        ..addError(Exception())
+        ..add(2);
 
       await expectLater(subject, emitsInOrder(<dynamic>[1, emitsError(isException), emitsError(isException), 2]));
-      subject.addError(Exception());
-      subject.add(3);
+      subject
+        ..addError(Exception())
+        ..add(3);
       await expectLater(subject, emitsInOrder(<dynamic>[emitsError(isException), 3]));
     });
 
     test('replays the most recently emitted items up to a max size', () async {
-      final subject = BufferedSubject<int>(maxSize: 2);
-
-      subject.add(1); // Should be dropped
-      subject.add(2);
-      subject.add(3);
+      final subject = BufferedSubject<int>(maxSize: 2)
+        ..add(1) // Should be dropped
+        ..add(2)
+        ..add(3);
 
       await expectLater(subject.stream, emitsInOrder(const <int>[2, 3]));
+      subject.add(4);
+      await expectLater(subject.stream, emitsInOrder(const <int>[4]));
+    });
+
+    test('replays the most recently emitted items up to a max age', () async {
+      // One timestamp call for add+truncateBuffer for each element and then one for onListen
+      final timestamps = Queue.of([
+        0, 0, // First event add + truncateBuffer
+        1, 1, // Second event add + truncateBuffer
+        2, 2, // Third event add + truncateBuffer
+        3, // onListen 1
+        4, 4, // Fourth event add + truncateBuffer
+        5 // onListen 2
+      ]);
+
+      final subject = BufferedSubject<int>(
+        maxAge: const Duration(microseconds: 2),
+        timeStampFun: timestamps.removeFirst,
+      )
+        ..add(1) // Should be dropped
+        ..add(2)
+        ..add(3);
+
+      await expectLater(subject.stream, emitsInOrder(const <int>[2, 3])).timeout(const Duration(seconds: 3));
       subject.add(4);
       await expectLater(subject.stream, emitsInOrder(const <int>[4]));
     });
@@ -96,7 +117,7 @@ void main() {
       await expectLater(subject.isClosed, isFalse);
 
       subject.add(1);
-      scheduleMicrotask(() => subject.close());
+      scheduleMicrotask(subject.close);
 
       await expectLater(subject.stream, emitsInOrder(<dynamic>[1, emitsDone]));
       await expectLater(subject.isClosed, isTrue);
@@ -136,41 +157,37 @@ void main() {
     });
 
     test('does not allow events to be added when addStream is active and there is no listener', () async {
-      final subject = BufferedSubject<int>();
-
-      // Purposely don't wait for the future to complete, then try to add items
-      // ignore: unawaited_futures
-      subject.addStream(Stream.fromIterable(const [1, 2, 3]));
+      final subject = BufferedSubject<int>()
+        // Purposely don't wait for the future to complete, then try to add items
+        // ignore: unawaited_futures
+        ..addStream(Stream.fromIterable(const [1, 2, 3]));
 
       await expectLater(() => subject.add(1), throwsStateError);
     });
 
     test('does not allow errors to be added when addStream is active and there is no listener', () async {
-      final subject = BufferedSubject<int>();
-
-      // Purposely don't wait for the future to complete, then try to add items
-      // ignore: unawaited_futures
-      subject.addStream(Stream.fromIterable(const [1, 2, 3]));
+      final subject = BufferedSubject<int>()
+        // Purposely don't wait for the future to complete, then try to add items
+        // ignore: unawaited_futures
+        ..addStream(Stream.fromIterable(const [1, 2, 3]));
 
       await expectLater(() => subject.addError(Error()), throwsStateError);
     });
 
     test('does not allow subject to be closed when addStream is active and there is no listener', () async {
-      final subject = BufferedSubject<int>();
+      final subject = BufferedSubject<int>()
+        // Purposely don't wait for the future to complete, then try to add items
+        // ignore: unawaited_futures
+        ..addStream(Stream.fromIterable(const [1, 2, 3]));
 
-      // Purposely don't wait for the future to complete, then try to add items
-      // ignore: unawaited_futures
-      subject.addStream(Stream.fromIterable(const [1, 2, 3]));
-
-      await expectLater(() => subject.close(), throwsStateError);
+      await expectLater(subject.close, throwsStateError);
     });
 
     test('does not allow addStream to add items when previous addStream is active and there is no listener', () async {
-      final subject = BufferedSubject<int>();
-
-      // Purposely don't wait for the future to complete, then try to add items
-      // ignore: unawaited_futures
-      subject.addStream(Stream.fromIterable(const [1, 2, 3]));
+      final subject = BufferedSubject<int>()
+        // Purposely don't wait for the future to complete, then try to add items
+        // ignore: unawaited_futures
+        ..addStream(Stream.fromIterable(const [1, 2, 3]));
 
       await expectLater(() => subject.addStream(Stream.fromIterable(const [1])), throwsStateError);
     });
@@ -221,7 +238,7 @@ void main() {
       // Purposely don't wait for the future to complete, then try to add items
       unawaited(subject.addStream(Stream.fromIterable(const [1, 2, 3])));
 
-      await expectLater(() => subject.close(), throwsStateError);
+      await expectLater(subject.close, throwsStateError);
       await sub.cancel();
     });
 
@@ -320,8 +337,9 @@ void main() {
       final subject = BufferedSubject<int>();
       final stream = subject.stream;
 
-      subject.add(1);
-      subject.add(2);
+      subject
+        ..add(1)
+        ..add(2);
 
       await expectLater(stream, emitsInOrder(const <int>[1, 2]));
       subject.add(3);
@@ -336,7 +354,7 @@ void main() {
 
     test('is always treated as a broadcast Stream', () async {
       final subject = BufferedSubject<int>();
-      final stream = subject.asyncMap((event) => Future.value(event));
+      final stream = subject.asyncMap(Future.value);
 
       expect(subject.isBroadcast, isTrue);
       expect(stream.isBroadcast, isTrue);
@@ -344,9 +362,7 @@ void main() {
 
     test('rxdart issue/419: sync behavior', () async {
       final subject = BufferedSubject<int>(sync: true)..add(1);
-      final mappedStream = subject.map((event) => event).shareValue();
-
-      mappedStream.listen(null);
+      final mappedStream = subject.map((event) => event).shareValue()..listen(null);
 
       expect(mappedStream.value, equals(1));
 
@@ -355,9 +371,7 @@ void main() {
 
     test('rxdart issue/419: sync throughput', () async {
       final subject = BufferedSubject<int>(sync: true)..add(1);
-      final mappedStream = subject.map((event) => event).shareValue();
-
-      mappedStream.listen(null);
+      final mappedStream = subject.map((event) => event).shareValue()..listen(null);
 
       subject.add(2);
 
